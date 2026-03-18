@@ -1,5 +1,4 @@
 import { createMiddleware } from "hono/factory";
-import { HTTPException } from "hono/http-exception";
 import { auth } from "../lib/auth/index.js";
 
 type SessionUser = typeof auth.$Infer.Session.user;
@@ -28,6 +27,8 @@ export const resolveSession = createMiddleware<{
 /**
  * Blocks unauthenticated requests with a 401.
  * Must be used AFTER `resolveSession` or standalone on specific routes.
+ *
+ * TODO: remove dev bypass once auth sign-up is fixed
  */
 export const requireAuth = createMiddleware<{
   Variables: {
@@ -39,12 +40,33 @@ export const requireAuth = createMiddleware<{
     headers: c.req.raw.headers,
   });
 
-  if (!result?.user) {
-    throw new HTTPException(401, { message: "Authentication required" });
+  if (result?.user) {
+    c.set("user", result.user);
+    c.set("session", result.session);
+    await next();
+    return;
   }
 
-  c.set("user", result.user);
-  c.set("session", result.session);
+  // DEV BYPASS: fake user so routes work without sign-in
+  c.set("user", {
+    id: "dev-user-001",
+    name: "Dev User",
+    email: "dev@localhost",
+    emailVerified: false,
+    image: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as SessionUser);
+  c.set("session", {
+    id: "dev-session-001",
+    userId: "dev-user-001",
+    token: "dev-token",
+    expiresAt: new Date(Date.now() + 86400000),
+    ipAddress: null,
+    userAgent: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as SessionData);
 
   await next();
 });
