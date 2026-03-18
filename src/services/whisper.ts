@@ -1,9 +1,10 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { groqTranscribeAudio, isGroqAvailable } from "./groq-fallback.js";
 
-if (!env.GEMINI_API_KEY) {
-  logger.warn("GEMINI_API_KEY not set — audio transcription unavailable");
+if (!env.GEMINI_API_KEY && !env.GROQ_API_KEY) {
+  logger.warn("Neither GEMINI_API_KEY nor GROQ_API_KEY set — audio transcription unavailable");
 }
 
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY ?? "");
@@ -30,60 +31,71 @@ export async function transcribeAudio(
   audioBase64: string,
   mimeType: string = "audio/m4a",
 ): Promise<TranscriptionResult> {
-  if (!env.GEMINI_API_KEY) {
-    throw new Error("Transcription is not configured — set GEMINI_API_KEY");
+  if (!env.GEMINI_API_KEY && !isGroqAvailable()) {
+    throw new Error("Transcription is not configured — set GEMINI_API_KEY or GROQ_API_KEY");
   }
 
   const start = Date.now();
 
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-  logger.debug(
-    { size: audioBase64.length, mimeType },
-    "Sending audio to Gemini for transcription",
-  );
-
-  const result = await model.generateContent([
-    TRANSCRIPTION_PROMPT,
-    {
-      inlineData: {
-        data: audioBase64,
-        mimeType,
-      },
-    },
-  ]);
-
-  const raw = result.response.text().trim();
-  const durationMs = Date.now() - start;
-
-  // Parse the JSON response
   let text = "";
   let language: string | null = null;
 
-  try {
-    let cleaned = raw;
-    if (cleaned.startsWith("```")) {
-      cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  if (env.GEMINI_API_KEY) {
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+      logger.debug(
+        { size: audioBase64.length, mimeType },
+        "Sending audio to Gemini for transcription",
+      );
+
+      const result = await model.generateContent([
+        TRANSCRIPTION_PROMPT,
+        { inlineData: { data: audioBase64, mimeType } },
+      ]);
+
+      const raw = result.response.text().trim();
+
+      try {
+        let cleaned = raw;
+        if (cleaned.startsWith("```")) {
+          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+        }
+        const parsed = JSON.parse(cleaned);
+        text = String(parsed.text ?? "");
+        language = parsed.language ?? null;
+      } catch {
+        text = raw;
+        logger.warn(
+          { raw: raw.slice(0, 200) },
+          "Gemini transcription response was not valid JSON, using raw text",
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: message }, "Gemini transcription failed, attempting Groq fallback");
+
+      if (!isGroqAvailable()) {
+        throw new Error("Audio transcription failed. Please try again.");
+      }
+
+      const groqResult = await groqTranscribeAudio(audioBase64, mimeType);
+      text = groqResult.text;
+      language = groqResult.language;
+      logger.info("Groq Whisper fallback succeeded for transcription");
     }
-    const parsed = JSON.parse(cleaned);
-    text = String(parsed.text ?? "");
-    language = parsed.language ?? null;
-  } catch {
-    // If JSON parsing fails, treat the raw response as the transcript
-    text = raw;
-    logger.warn(
-      { raw: raw.slice(0, 200) },
-      "Gemini transcription response was not valid JSON, using raw text",
-    );
+  } else {
+    logger.debug("GEMINI_API_KEY not set, using Groq Whisper for transcription");
+    const groqResult = await groqTranscribeAudio(audioBase64, mimeType);
+    text = groqResult.text;
+    language = groqResult.language;
   }
 
+  const durationMs = Date.now() - start;
+
   logger.info(
-    {
-      transcriptionLength: text.length,
-      language,
-      durationMs,
-    },
-    "Gemini transcription complete",
+    { transcriptionLength: text.length, language, durationMs },
+    "Transcription complete",
   );
 
   return { text, language, durationMs };

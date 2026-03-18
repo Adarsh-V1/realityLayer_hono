@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { groqGenerateText, isGroqAvailable } from "../services/groq-fallback.js";
 import type { PluginHandler, PluginContext, PluginResult } from "./types.js";
 
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY ?? "");
@@ -62,12 +63,30 @@ export const shoppingPlugin: PluginHandler = {
       };
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
     const prompt = `${SHOPPING_PROMPT}\n\nDetected objects:\n${objectNames}\n\nCurrency: ${(ctx.userConfig.currency as string) || "USD"}`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
+    let text: string;
+    if (env.GEMINI_API_KEY) {
+      try {
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+        const result = await model.generateContent(prompt);
+        text = result.response.text();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ err: message }, "Shopping plugin: Gemini failed, trying Groq");
+        if (!isGroqAvailable()) throw err;
+        text = await groqGenerateText(prompt);
+      }
+    } else if (isGroqAvailable()) {
+      text = await groqGenerateText(prompt);
+    } else {
+      return {
+        pluginSlug: "shopping",
+        pluginName: "Smart Shopping",
+        cardType: "shopping",
+        data: { results: [], error: "No AI provider configured" },
+      };
+    }
 
     let cleaned = text.trim();
     if (cleaned.startsWith("```")) {

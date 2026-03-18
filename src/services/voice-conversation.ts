@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { groqGenerateText, groqGenerateVision, isGroqAvailable } from "./groq-fallback.js";
 
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY ?? "");
 
@@ -97,10 +98,40 @@ export async function generateVoiceResponse(
     });
   }
 
-  logger.debug("Sending voice conversation to Gemini");
+  let reply: string;
 
-  const result = await model.generateContent(parts);
-  const reply = result.response.text().trim();
+  if (env.GEMINI_API_KEY) {
+    try {
+      logger.debug("Sending voice conversation to Gemini");
+      const result = await model.generateContent(parts);
+      reply = result.response.text().trim();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: message }, "Gemini voice failed, attempting Groq fallback");
+
+      if (!isGroqAvailable()) {
+        throw new Error("Voice AI is temporarily unavailable. Please try again.");
+      }
+
+      if (ctx.imageBase64 && ctx.imageMimeType) {
+        reply = await groqGenerateVision(prompt, ctx.imageBase64, ctx.imageMimeType);
+      } else {
+        reply = await groqGenerateText(prompt);
+      }
+      reply = reply.trim();
+      logger.info("Groq fallback succeeded for voice response");
+    }
+  } else if (isGroqAvailable()) {
+    logger.debug("GEMINI_API_KEY not set, using Groq for voice response");
+    if (ctx.imageBase64 && ctx.imageMimeType) {
+      reply = await groqGenerateVision(prompt, ctx.imageBase64, ctx.imageMimeType);
+    } else {
+      reply = await groqGenerateText(prompt);
+    }
+    reply = reply.trim();
+  } else {
+    throw new Error("No AI provider configured. Set GEMINI_API_KEY or GROQ_API_KEY.");
+  }
 
   const processingTimeMs = Date.now() - start;
 

@@ -1,9 +1,10 @@
 import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { groqGenerateVision, isGroqAvailable } from "./groq-fallback.js";
 
-if (!env.GEMINI_API_KEY) {
-  logger.warn("GEMINI_API_KEY not set — AI analysis will fail");
+if (!env.GEMINI_API_KEY && !env.GROQ_API_KEY) {
+  logger.warn("Neither GEMINI_API_KEY nor GROQ_API_KEY set — AI analysis will fail");
 }
 
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY ?? "");
@@ -68,53 +69,58 @@ Rules:
 export async function analyzeImage(
   imageInput: { url: string } | { base64: string; mimeType: string },
 ): Promise<AnalysisResult> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-  let imagePart: Part;
+  // Extract image data upfront (needed for both Gemini and fallback)
+  let imageBase64: string;
+  let imageMimeType: string;
 
   if ("url" in imageInput) {
-    // Fetch the image and convert to inline data for the API
     const res = await fetch(imageInput.url);
     if (!res.ok) {
       throw new Error(`Failed to fetch image from URL: ${res.status}`);
     }
     const buffer = Buffer.from(await res.arrayBuffer());
-    const mimeType = res.headers.get("content-type") ?? "image/jpeg";
-    imagePart = {
-      inlineData: {
-        data: buffer.toString("base64"),
-        mimeType,
-      },
-    };
+    imageMimeType = res.headers.get("content-type") ?? "image/jpeg";
+    imageBase64 = buffer.toString("base64");
   } else {
-    imagePart = {
-      inlineData: {
-        data: imageInput.base64,
-        mimeType: imageInput.mimeType,
-      },
-    };
+    imageBase64 = imageInput.base64;
+    imageMimeType = imageInput.mimeType;
   }
 
-  logger.debug("Sending image to Gemini for analysis");
+  const imagePart: Part = {
+    inlineData: { data: imageBase64, mimeType: imageMimeType },
+  };
 
-  let result;
-  try {
-    result = await model.generateContent([VISION_PROMPT, imagePart]);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("429") || message.includes("quota") || message.includes("RESOURCE_EXHAUSTED")) {
-      logger.warn({ err: message }, "Gemini API quota exceeded");
-      throw new Error("AI service is temporarily unavailable due to rate limits. Please try again in a minute.");
+  // Try Gemini first, then fall back to Groq
+  let text: string;
+
+  if (env.GEMINI_API_KEY) {
+    try {
+      logger.debug("Sending image to Gemini for analysis");
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const result = await model.generateContent([VISION_PROMPT, imagePart]);
+      text = result.response.text();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: message }, "Gemini API failed, attempting Groq fallback");
+
+      if (!isGroqAvailable()) {
+        if (message.includes("429") || message.includes("quota") || message.includes("RESOURCE_EXHAUSTED")) {
+          throw new Error("AI service is temporarily unavailable due to rate limits. Please try again in a minute.");
+        }
+        throw new Error("AI analysis failed. Please try again.");
+      }
+
+      text = await groqGenerateVision(VISION_PROMPT, imageBase64, imageMimeType);
+      logger.info("Groq fallback succeeded for image analysis");
     }
-    logger.error({ err: message }, "Gemini API call failed");
-    throw new Error("AI analysis failed. Please try again.");
+  } else if (isGroqAvailable()) {
+    logger.debug("GEMINI_API_KEY not set, using Groq for image analysis");
+    text = await groqGenerateVision(VISION_PROMPT, imageBase64, imageMimeType);
+  } else {
+    throw new Error("No AI provider configured. Set GEMINI_API_KEY or GROQ_API_KEY.");
   }
 
-  const response = result.response;
-  const text = response.text();
-
-  logger.debug({ rawResponse: text.slice(0, 200) }, "Gemini raw response");
-
+  logger.debug({ rawResponse: text.slice(0, 200) }, "AI raw response");
   return parseGeminiResponse(text);
 }
 
