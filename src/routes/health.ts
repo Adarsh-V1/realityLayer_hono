@@ -30,6 +30,32 @@ healthRoute.get("/health/db", async (c) => {
   }
 });
 
+// Diagnose: test scrypt password hashing speed + BETTER_AUTH_URL
+healthRoute.get("/health/diag", async (c) => {
+  const crypto = await import("node:crypto");
+  const start = Date.now();
+  const authUrl = process.env.BETTER_AUTH_URL ?? "NOT_SET";
+
+  try {
+    // Test scrypt with Better Auth's default params (N=16384, r=8, p=1)
+    await new Promise<Buffer>((resolve, reject) => {
+      crypto.scrypt("TestPassword123", "randomsalt1234567890", 64, { N: 16384, r: 8, p: 1 }, (err, key) => {
+        if (err) reject(err);
+        else resolve(key);
+      });
+    });
+    const hashMs = Date.now() - start;
+
+    return success(c, {
+      scryptMs: hashMs,
+      authUrl: authUrl.slice(0, 30) + "...",
+      nodeVersion: process.version,
+    });
+  } catch (err: any) {
+    return error(c, "DIAG_ERROR", err.message ?? String(err), 500);
+  }
+});
+
 healthRoute.get("/", (c) => {
   return success(c, {
     name: "Reality Layer API",
