@@ -56,6 +56,44 @@ healthRoute.get("/health/diag", async (c) => {
   }
 });
 
+// Full sign-up simulation (body parse + DB queries + hash)
+healthRoute.post("/health/test-signup", async (c) => {
+  const timings: Record<string, number> = {};
+  const start = Date.now();
+  try {
+    // 1. Parse body
+    const body = await c.req.json();
+    timings.bodyParseMs = Date.now() - start;
+
+    // 2. DB read
+    let t = Date.now();
+    await db.execute(sql`SELECT * FROM "user" WHERE email = 'nobody@test.com' LIMIT 1`);
+    timings.dbReadMs = Date.now() - t;
+
+    // 3. Scrypt hash
+    t = Date.now();
+    const crypto = await import("node:crypto");
+    await new Promise<Buffer>((resolve, reject) => {
+      crypto.scrypt("TestPass123", "salt1234567890123456", 64, { N: 16384, r: 8, p: 1 }, (err, key) => {
+        if (err) reject(err);
+        else resolve(key);
+      });
+    });
+    timings.hashMs = Date.now() - t;
+
+    // 4. DB write
+    t = Date.now();
+    await db.execute(sql`SELECT 1`);
+    timings.dbWriteMs = Date.now() - t;
+
+    timings.totalMs = Date.now() - start;
+    return success(c, { timings, body });
+  } catch (err: any) {
+    timings.totalMs = Date.now() - start;
+    return error(c, "TEST_ERROR", `${err.message} | timings: ${JSON.stringify(timings)}`, 500);
+  }
+});
+
 healthRoute.get("/", (c) => {
   return success(c, {
     name: "Reality Layer API",
