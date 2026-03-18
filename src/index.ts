@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { handle } from "@hono/node-server/vercel";
+import { handle } from "hono/vercel";
 import { createApp } from "./app.js";
 
 const app = createApp();
