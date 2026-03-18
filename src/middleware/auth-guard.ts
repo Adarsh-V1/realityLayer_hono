@@ -36,18 +36,8 @@ export const requireAuth = createMiddleware<{
     session: SessionData;
   };
 }>(async (c, next) => {
-  const result = await auth.api.getSession({
-    headers: c.req.raw.headers,
-  });
-
-  if (result?.user) {
-    c.set("user", result.user);
-    c.set("session", result.session);
-    await next();
-    return;
-  }
-
-  // DEV BYPASS: fake user so routes work without sign-in
+  // DEV BYPASS: skip Better Auth entirely until sign-up is fixed
+  // TODO: remove this bypass and restore auth.api.getSession() call
   c.set("user", {
     id: "dev-user-001",
     name: "Dev User",
