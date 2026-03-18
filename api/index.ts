@@ -1,3 +1,3 @@
-// Vercel serverless function entry point
-// Re-exports the Hono app as a Vercel handler
+// Vercel Edge Function entry point
 export { default } from "../src/index.js";
+export const config = { runtime: "edge" };

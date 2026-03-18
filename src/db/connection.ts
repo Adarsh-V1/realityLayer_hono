@@ -1,17 +1,13 @@
-import { Pool, neonConfig } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-serverless";
-import ws from "ws";
+import { neon } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-http";
 import { env } from "../config/env.js";
 import * as schema from "./schema/index.js";
 
-// WebSocket constructor required for Node.js / Vercel serverless
-neonConfig.webSocketConstructor = ws;
-
-// Strip channel_binding param which can interfere with some drivers
+// Strip channel_binding param which can interfere with HTTP driver
 const url = env.DATABASE_URL.replace(/[&?]channel_binding=[^&]*/g, "");
 
-const pool = new Pool({ connectionString: url });
+const sql = neon(url);
 
-export const db = drizzle(pool, { schema });
+export const db = drizzle(sql, { schema });
 
 export type Database = typeof db;
