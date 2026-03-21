@@ -5,3 +5,5 @@ export * from "./plugins.js";
 export * from "./memories.js";
 export * from "./saas.js";
 export * from "./relations.js";
+export * from "./features.js";
+export * from "./games.js";

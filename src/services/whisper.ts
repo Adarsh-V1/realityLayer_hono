@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { parseAIJson } from "../plugins/ai-helper.js";
 import { groqTranscribeAudio, isGroqAvailable } from "./groq-fallback.js";
 
 if (!env.GEMINI_API_KEY && !env.GROQ_API_KEY) {
@@ -42,7 +43,10 @@ export async function transcribeAudio(
 
   if (env.GEMINI_API_KEY) {
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash",
+        generationConfig: { responseMimeType: "application/json" },
+      });
 
       logger.debug(
         { size: audioBase64.length, mimeType },
@@ -57,11 +61,7 @@ export async function transcribeAudio(
       const raw = result.response.text().trim();
 
       try {
-        let cleaned = raw;
-        if (cleaned.startsWith("```")) {
-          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
-        }
-        const parsed = JSON.parse(cleaned);
+        const parsed = parseAIJson<{ text?: string; language?: string | null }>(raw);
         text = String(parsed.text ?? "");
         language = parsed.language ?? null;
       } catch {

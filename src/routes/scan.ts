@@ -71,13 +71,19 @@ scanRoute.post("/scan", async (c) => {
     let raw = parsed.data.image;
 
     // Strip data-URI prefix if present
-    const dataUriMatch = raw.match(/^data:(image\/\w+);base64,(.+)$/);
+    const dataUriMatch = raw.match(/^data:(image\/[^;]+);base64,(.+)$/);
     if (dataUriMatch) {
       mimeType = dataUriMatch[1];
       raw = dataUriMatch[2];
     }
 
-    base64Data = raw;
+    // Validate base64 format
+    const b64Clean = raw.replace(/\s/g, "");
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64Clean)) {
+      return error(c, "INVALID_INPUT", "Image data is not valid base64", 400);
+    }
+
+    base64Data = b64Clean;
     activePlugins = parsed.data.plugins;
     pluginConfigs = parsed.data.pluginConfigs;
   }

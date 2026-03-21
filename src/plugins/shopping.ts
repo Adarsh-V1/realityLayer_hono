@@ -1,10 +1,6 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
-import { groqGenerateText, isGroqAvailable } from "../services/groq-fallback.js";
+import { generateText, parseAIJson } from "./ai-helper.js";
 import type { PluginHandler, PluginContext, PluginResult } from "./types.js";
-
-const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY ?? "");
 
 const SHOPPING_PROMPT = `You are a shopping assistant AI. Given a list of detected objects, provide shopping intelligence.
 
@@ -65,36 +61,9 @@ export const shoppingPlugin: PluginHandler = {
 
     const prompt = `${SHOPPING_PROMPT}\n\nDetected objects:\n${objectNames}\n\nCurrency: ${(ctx.userConfig.currency as string) || "USD"}`;
 
-    let text: string;
-    if (env.GEMINI_API_KEY) {
-      try {
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-        const result = await model.generateContent(prompt);
-        text = result.response.text();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ err: message }, "Shopping plugin: Gemini failed, trying Groq");
-        if (!isGroqAvailable()) throw err;
-        text = await groqGenerateText(prompt);
-      }
-    } else if (isGroqAvailable()) {
-      text = await groqGenerateText(prompt);
-    } else {
-      return {
-        pluginSlug: "shopping",
-        pluginName: "Smart Shopping",
-        cardType: "shopping",
-        data: { results: [], error: "No AI provider configured" },
-      };
-    }
-
-    let cleaned = text.trim();
-    if (cleaned.startsWith("```")) {
-      cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
-    }
-
     try {
-      const parsed = JSON.parse(cleaned);
+      const text = await generateText(prompt);
+      const parsed = parseAIJson<{ results?: unknown[] }>(text);
       return {
         pluginSlug: "shopping",
         pluginName: "Smart Shopping",
@@ -102,12 +71,12 @@ export const shoppingPlugin: PluginHandler = {
         data: { results: parsed.results ?? [] } as Record<string, unknown>,
       };
     } catch (err) {
-      logger.warn({ err }, "Shopping plugin: failed to parse LLM response");
+      logger.warn({ err }, "Shopping plugin: failed to get/parse AI response");
       return {
         pluginSlug: "shopping",
         pluginName: "Smart Shopping",
         cardType: "shopping",
-        data: { results: [], error: "Failed to parse shopping data" },
+        data: { results: [], error: "Failed to get shopping data" },
       };
     }
   },

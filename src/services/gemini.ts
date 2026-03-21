@@ -2,9 +2,10 @@ import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 import { groqGenerateVision, isGroqAvailable } from "./groq-fallback.js";
+import { xaiGenerateVision, isXaiAvailable } from "./xai.js";
 
-if (!env.GEMINI_API_KEY && !env.GROQ_API_KEY) {
-  logger.warn("Neither GEMINI_API_KEY nor GROQ_API_KEY set — AI analysis will fail");
+if (!env.GEMINI_API_KEY && !env.GROQ_API_KEY && !env.XAI_API_KEY) {
+  logger.warn("No AI provider configured (GEMINI_API_KEY, GROQ_API_KEY, XAI_API_KEY) — AI analysis will fail");
 }
 
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY ?? "");
@@ -63,13 +64,13 @@ Rules:
 // ---------- Public API ----------
 
 /**
- * Analyze an image using Gemini's vision model.
- * Accepts either a publicly-accessible URL or raw base64 data.
+ * Analyze an image using available AI providers.
+ * Fallback chain: Gemini → Groq → xAI Grok
  */
 export async function analyzeImage(
   imageInput: { url: string } | { base64: string; mimeType: string },
 ): Promise<AnalysisResult> {
-  // Extract image data upfront (needed for both Gemini and fallback)
+  // Extract image data upfront (needed for all providers)
   let imageBase64: string;
   let imageMimeType: string;
 
@@ -86,63 +87,103 @@ export async function analyzeImage(
     imageMimeType = imageInput.mimeType;
   }
 
-  const imagePart: Part = {
-    inlineData: { data: imageBase64, mimeType: imageMimeType },
-  };
+  // Try each provider in order
+  const errors: string[] = [];
+  let text: string | undefined;
 
-  // Try Gemini first, then fall back to Groq
-  let text: string;
-
+  // 1. Try Gemini
   if (env.GEMINI_API_KEY) {
     try {
       logger.debug("Sending image to Gemini for analysis");
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const imagePart: Part = {
+        inlineData: { data: imageBase64, mimeType: imageMimeType },
+      };
+      const model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash",
+        generationConfig: { responseMimeType: "application/json" },
+      });
       const result = await model.generateContent([VISION_PROMPT, imagePart]);
       text = result.response.text();
+      logger.info("Gemini analysis succeeded");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: message }, "Gemini API failed, attempting Groq fallback");
-
-      if (!isGroqAvailable()) {
-        if (message.includes("429") || message.includes("quota") || message.includes("RESOURCE_EXHAUSTED")) {
-          throw new Error("AI service is temporarily unavailable due to rate limits. Please try again in a minute.");
-        }
-        throw new Error("AI analysis failed. Please try again.");
-      }
-
-      text = await groqGenerateVision(VISION_PROMPT, imageBase64, imageMimeType);
-      logger.info("Groq fallback succeeded for image analysis");
+      errors.push(`Gemini: ${message.slice(0, 100)}`);
+      logger.warn({ err: message }, "Gemini failed");
     }
-  } else if (isGroqAvailable()) {
-    logger.debug("GEMINI_API_KEY not set, using Groq for image analysis");
-    text = await groqGenerateVision(VISION_PROMPT, imageBase64, imageMimeType);
-  } else {
-    throw new Error("No AI provider configured. Set GEMINI_API_KEY or GROQ_API_KEY.");
+  }
+
+  // 2. Try Groq
+  if (!text && isGroqAvailable()) {
+    try {
+      logger.debug("Trying Groq for image analysis");
+      text = await groqGenerateVision(VISION_PROMPT, imageBase64, imageMimeType);
+      logger.info("Groq analysis succeeded");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`Groq: ${message.slice(0, 100)}`);
+      logger.warn({ err: message }, "Groq failed");
+    }
+  }
+
+  // 3. Try xAI Grok
+  if (!text && isXaiAvailable()) {
+    try {
+      logger.debug("Trying xAI Grok for image analysis");
+      text = await xaiGenerateVision(VISION_PROMPT, imageBase64, imageMimeType);
+      logger.info("xAI Grok analysis succeeded");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`xAI: ${message.slice(0, 100)}`);
+      logger.warn({ err: message }, "xAI Grok failed");
+    }
+  }
+
+  // All providers failed
+  if (!text) {
+    const hasAnyKey = env.GEMINI_API_KEY || env.GROQ_API_KEY || env.XAI_API_KEY;
+    if (!hasAnyKey) {
+      throw new Error("No AI provider configured. Set GEMINI_API_KEY, GROQ_API_KEY, or XAI_API_KEY.");
+    }
+    throw new Error(`All AI providers failed: ${errors.join(" | ")}`);
   }
 
   logger.debug({ rawResponse: text.slice(0, 200) }, "AI raw response");
-  return parseGeminiResponse(text);
+  return parseVisionResponse(text);
 }
 
 // ---------- Helpers ----------
 
-function parseGeminiResponse(raw: string): AnalysisResult {
-  // Strip markdown code fences if present
+function parseVisionResponse(raw: string): AnalysisResult {
   let cleaned = raw.trim();
+
+  // Extract from markdown fences if present anywhere
+  const fencedMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch) {
+    cleaned = fencedMatch[1].trim();
+  }
+
+  // Strip leading/trailing fences
   if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  }
+
+  // Extract JSON from prose
+  if (!cleaned.startsWith("{") && !cleaned.startsWith("[")) {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
   }
 
   try {
     const parsed = JSON.parse(cleaned);
 
-    // Validate structure
     if (!parsed.objects || !Array.isArray(parsed.objects)) {
-      logger.warn({ parsed }, "Gemini response missing objects array");
+      logger.warn({ parsed }, "AI response missing objects array");
       return { objects: [] };
     }
 
-    // Normalize each object
     const objects: ObjectInsight[] = parsed.objects.map((obj: Record<string, unknown>) => {
       const bb = (obj.boundingBox ?? obj.bounding_box ?? {}) as Record<string, unknown>;
       return {
@@ -164,7 +205,7 @@ function parseGeminiResponse(raw: string): AnalysisResult {
 
     return { objects };
   } catch (err) {
-    logger.error({ err, raw: raw.slice(0, 500) }, "Failed to parse Gemini response");
+    logger.error({ err, raw: raw.slice(0, 500) }, "Failed to parse AI response");
     throw new Error("AI returned an invalid response. Please try again.");
   }
 }

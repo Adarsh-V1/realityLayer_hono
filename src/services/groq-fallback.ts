@@ -1,18 +1,21 @@
-import Groq from "groq-sdk";
+import OpenAI from "openai";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
-let groqClient: Groq | null = null;
+let groqClient: OpenAI | null = null;
 
-function getGroq(): Groq {
+function getGroq(): OpenAI {
   if (!env.GROQ_API_KEY) {
     throw new Error("GROQ_API_KEY not set — Groq fallback unavailable");
   }
   if (!groqClient) {
-    groqClient = new Groq({ apiKey: env.GROQ_API_KEY });
+    groqClient = new OpenAI({
+      apiKey: env.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+    });
   }
   return groqClient;
 }
@@ -23,17 +26,22 @@ export function isGroqAvailable(): boolean {
 
 /**
  * Generate text using Groq (text-only, no vision).
- * Uses Llama 3.3 70B for high-quality text generation.
+ * Uses Llama 3.3 70B via OpenAI-compatible endpoint.
+ * Pass jsonMode: true to force JSON output (for structured data).
  */
-export async function groqGenerateText(prompt: string): Promise<string> {
-  const groq = getGroq();
+export async function groqGenerateText(
+  prompt: string,
+  opts?: { jsonMode?: boolean },
+): Promise<string> {
+  const client = getGroq();
   logger.debug("Sending text request to Groq (Llama 3.3 70B)");
 
-  const completion = await groq.chat.completions.create({
+  const completion = await client.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     messages: [{ role: "user", content: prompt }],
     temperature: 0.7,
     max_tokens: 4096,
+    ...(opts?.jsonMode && { response_format: { type: "json_object" as const } }),
   });
 
   return completion.choices[0]?.message?.content ?? "";
@@ -41,17 +49,18 @@ export async function groqGenerateText(prompt: string): Promise<string> {
 
 /**
  * Generate text from an image using Groq Vision (Llama 3.2 Vision).
+ * Uses OpenAI-compatible vision format.
  */
 export async function groqGenerateVision(
   prompt: string,
   imageBase64: string,
   mimeType: string,
 ): Promise<string> {
-  const groq = getGroq();
-  logger.debug("Sending vision request to Groq (Llama 3.2 90B Vision)");
+  const client = getGroq();
+  logger.debug("Sending vision request to Groq (Llama 3.2 11B Vision)");
 
-  const completion = await groq.chat.completions.create({
-    model: "llama-3.2-90b-vision-preview",
+  const completion = await client.chat.completions.create({
+    model: "llama-3.2-11b-vision-preview",
     messages: [
       {
         role: "user",
@@ -74,15 +83,14 @@ export async function groqGenerateVision(
 }
 
 /**
- * Transcribe audio using Groq Whisper.
+ * Transcribe audio using Groq Whisper via OpenAI-compatible endpoint.
  */
 export async function groqTranscribeAudio(
   audioBase64: string,
   mimeType: string,
 ): Promise<{ text: string; language: string | null }> {
-  const groq = getGroq();
+  const client = getGroq();
 
-  // Groq's audio API expects a file stream
   const ext = mimeType.split("/")[1] || "m4a";
   const tmpPath = path.join(os.tmpdir(), `audio-${Date.now()}.${ext}`);
   fs.writeFileSync(tmpPath, Buffer.from(audioBase64, "base64"));
@@ -90,7 +98,7 @@ export async function groqTranscribeAudio(
   logger.debug({ mimeType }, "Sending audio to Groq Whisper for transcription");
 
   try {
-    const transcription = await groq.audio.transcriptions.create({
+    const transcription = await client.audio.transcriptions.create({
       file: fs.createReadStream(tmpPath),
       model: "whisper-large-v3",
       response_format: "verbose_json",

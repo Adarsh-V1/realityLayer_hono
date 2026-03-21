@@ -1,10 +1,6 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
-import { groqGenerateText, isGroqAvailable } from "../services/groq-fallback.js";
+import { generateText, parseAIJson } from "./ai-helper.js";
 import type { PluginHandler, PluginContext, PluginResult } from "./types.js";
-
-const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY ?? "");
 
 const FITNESS_PROMPT = `You are a fitness and nutrition expert AI. Analyze the detected objects and provide health/fitness insights.
 
@@ -67,36 +63,9 @@ export const fitnessPlugin: PluginHandler = {
 
     const prompt = `${FITNESS_PROMPT}\n\nDetected objects:\n${objectNames}\n\nUser fitness goal: ${goal}\nUnit system: ${units}`;
 
-    let text: string;
-    if (env.GEMINI_API_KEY) {
-      try {
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-        const result = await model.generateContent(prompt);
-        text = result.response.text();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ err: message }, "Fitness plugin: Gemini failed, trying Groq");
-        if (!isGroqAvailable()) throw err;
-        text = await groqGenerateText(prompt);
-      }
-    } else if (isGroqAvailable()) {
-      text = await groqGenerateText(prompt);
-    } else {
-      return {
-        pluginSlug: "fitness",
-        pluginName: "Fitness Coach",
-        cardType: "fitness",
-        data: { results: [], error: "No AI provider configured" },
-      };
-    }
-
-    let cleaned = text.trim();
-    if (cleaned.startsWith("```")) {
-      cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
-    }
-
     try {
-      const parsed = JSON.parse(cleaned);
+      const text = await generateText(prompt);
+      const parsed = parseAIJson<{ results?: unknown[] }>(text);
       return {
         pluginSlug: "fitness",
         pluginName: "Fitness Coach",
@@ -104,12 +73,12 @@ export const fitnessPlugin: PluginHandler = {
         data: { results: parsed.results ?? [] } as Record<string, unknown>,
       };
     } catch (err) {
-      logger.warn({ err }, "Fitness plugin: failed to parse LLM response");
+      logger.warn({ err }, "Fitness plugin: failed to get/parse AI response");
       return {
         pluginSlug: "fitness",
         pluginName: "Fitness Coach",
         cardType: "fitness",
-        data: { results: [], error: "Failed to parse fitness data" },
+        data: { results: [], error: "Failed to get fitness data" },
       };
     }
   },

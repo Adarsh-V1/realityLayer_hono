@@ -21,6 +21,16 @@ import { voiceRoute } from "./routes/voice.js";
 import { subscriptionRoute, stripeWebhookRoute } from "./routes/subscriptions.js";
 import { apiKeyRoute } from "./routes/api-keys.js";
 import { analyticsRoute } from "./routes/analytics.js";
+import { scavengerRoute } from "./routes/scavenger.js";
+import { timeCapsuleRoute } from "./routes/time-capsule.js";
+import { socialRoute } from "./routes/social.js";
+import { achievementRoute } from "./routes/achievements.js";
+import { reminderRoute } from "./routes/reminders.js";
+import { collectionRoute } from "./routes/collections.js";
+import { sceneDescriberRoute } from "./routes/scene-describer.js";
+import { scanTycoonRoute } from "./routes/scan-tycoon.js";
+import { objectAlchemistRoute } from "./routes/object-alchemist.js";
+import { realityRoyaleRoute } from "./routes/reality-royale.js";
 
 export function createApp() {
   const app = new Hono<AppEnv>();
@@ -92,6 +102,19 @@ export function createApp() {
   app.route("/api", memoryRoute);
 
   app.route("/api", voiceRoute);
+
+  // --- Feature routes ---
+  app.route("/api", scavengerRoute);
+  app.route("/api", timeCapsuleRoute);
+  app.route("/api", socialRoute);
+  app.route("/api", achievementRoute);
+  app.route("/api", reminderRoute);
+  app.route("/api", collectionRoute);
+  app.route("/api", sceneDescriberRoute);
+  // --- Game routes ---
+  app.route("/api", scanTycoonRoute);
+  app.route("/api", objectAlchemistRoute);
+  app.route("/api", realityRoyaleRoute);
 
   // --- SaaS routes ---
   app.route("/api", subscriptionRoute);
